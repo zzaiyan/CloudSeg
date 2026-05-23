@@ -9,26 +9,63 @@ from SSUCC_net import SSUCCNet
 from torch.optim import lr_scheduler
 
 class ModelSSNet(ModelBase):
+    @staticmethod
+    def _resolve_num_classes(opts):
+        if hasattr(opts, "num_classes") and opts.num_classes is not None:
+            return int(opts.num_classes)
+        if opts.lc_level == '1':
+            return 6
+        if opts.lc_level == '2':
+            return 11
+        raise ValueError(f"Unsupported lc_level: {opts.lc_level}")
+
+    @staticmethod
+    def _maybe_wrap_data_parallel(network, gpu_ids):
+        visible_gpu_ids = [gpu_id.strip() for gpu_id in str(gpu_ids).split(",") if gpu_id.strip()]
+        if len(visible_gpu_ids) > 1:
+            return nn.DataParallel(network)
+        return network
+
+    @staticmethod
+    def _load_network_state(network, state_dict):
+        try:
+            network.load_state_dict(state_dict)
+            return
+        except RuntimeError:
+            pass
+
+        has_module_prefix = any(key.startswith("module.") for key in state_dict)
+        is_data_parallel = isinstance(network, nn.DataParallel)
+
+        if has_module_prefix and not is_data_parallel:
+            state_dict = {key[len("module."):]: value for key, value in state_dict.items()}
+        elif not has_module_prefix and is_data_parallel:
+            state_dict = {f"module.{key}": value for key, value in state_dict.items()}
+
+        network.load_state_dict(state_dict)
+
     def __init__(self, opts):
         super(ModelSSNet, self).__init__()
         self.opts = opts
 
-        # assign value to self.num_classes
-        if self.opts.lc_level == '1':
-            self.num_classes = 6
-        elif self.opts.lc_level == '2':
-            self.num_classes = 11
+        self.num_classes = self._resolve_num_classes(self.opts)
+        self.optical_channels = int(getattr(self.opts, "optical_channels", 4))
         
-        encoder_weights = None if self.opts.pretrained_model is not None else 'imagenet'
+        encoder_weights = getattr(self.opts, "encoder_weights", None)
+        if encoder_weights is None:
+            encoder_weights = None if self.opts.pretrained_model is not None else 'imagenet'
+        if isinstance(encoder_weights, str) and encoder_weights.lower() == "none":
+            encoder_weights = None
 
         # create network and load pre-trained model
         self.net_G = SSUCCNet(encoder_name='mit_b4',
                               encoder_weights=encoder_weights,
-                              classes=self.num_classes).cuda()
-        self.net_G = nn.DataParallel(self.net_G)
+                              classes=self.num_classes,
+                              optical_channels=self.optical_channels).cuda()
+        self.net_G = self._maybe_wrap_data_parallel(self.net_G, self.opts.gpu_ids)
         if self.opts.pretrained_model is not None:
             checkpoint = torch.load(self.opts.pretrained_model)
-            self.net_G.load_state_dict(checkpoint['network'])
+            self._load_network_state(self.net_G, checkpoint['network'])
             
 
         # initialize optimizers
@@ -52,7 +89,7 @@ class ModelSSNet(ModelBase):
 
             if self.opts.continue_train_checkpoint is not None:
                 checkpoint = torch.load(self.opts.continue_train_checkpoint)
-                self.net_G.load_state_dict(checkpoint['network'])
+                self._load_network_state(self.net_G, checkpoint['network'])
                 self.optimizer_G.load_state_dict(checkpoint['optimizer'])
                 self.start_epoch = checkpoint['epoch']
                 self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
@@ -60,11 +97,11 @@ class ModelSSNet(ModelBase):
                 self.start_epoch = -1
                         
     def set_input(self, inputs):
-        self.cloudy_data = inputs['cloudy_data'].cuda()
-        self.cloudfree_data = inputs['cloudfree_data'].cuda()
-        self.SAR_data = inputs['SAR_data'].cuda() if self.opts.is_load_SAR else None
-        self.cloudmask_data = inputs['cloudmask_data'].cuda() if self.opts.is_load_cloudmask else None
-        self.landcover_data = inputs['landcover_data'].long().cuda() if self.opts.is_load_landcover else None
+        self.cloudy_data = inputs['cloudy_data'].cuda(non_blocking=True)
+        self.cloudfree_data = inputs['cloudfree_data'].cuda(non_blocking=True)
+        self.SAR_data = inputs['SAR_data'].cuda(non_blocking=True) if self.opts.is_load_SAR else None
+        self.cloudmask_data = inputs['cloudmask_data'].cuda(non_blocking=True) if self.opts.is_load_cloudmask else None
+        self.landcover_data = inputs['landcover_data'].long().cuda(non_blocking=True) if self.opts.is_load_landcover else None
         
     def forward(self, optical_data=None, SAR_data=None, output_shape=None, is_train=False):
         self.pred_landcover_data = self.net_G(optical_data, SAR_data, output_shape)
@@ -88,4 +125,4 @@ class ModelSSNet(ModelBase):
     
     def load_checkpoint(self, epoch):
         checkpoint = torch.load(os.path.join(self.opts.save_model_dir, '%s_net.pth' % (str(epoch))))
-        self.net_G.load_state_dict(checkpoint['network'])
+        self._load_network_state(self.net_G, checkpoint['network'])

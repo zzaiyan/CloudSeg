@@ -3,6 +3,7 @@ import time
 import torch
 import numpy as np
 from metrics import StreamSegMetrics 
+from tqdm import tqdm
 
 class Generic_Train():
 	def __init__(self, model, opts, train_dataloader, val_dataloader):
@@ -15,6 +16,7 @@ class Generic_Train():
 		
 		total_steps = 0
 		log_loss = 0
+		log_count = 0
 		best_semantic_score = 0 
 
 		for epoch in range(self.opts.max_epochs):
@@ -27,17 +29,27 @@ class Generic_Train():
 						print('epoch', epoch, 'steps', total_steps)
 				'''
 			else:
-				for data in self.train_dataloader:
+				progress = tqdm(
+					self.train_dataloader,
+					total=len(self.train_dataloader),
+					desc=f"Epoch {epoch + 1}/{self.opts.max_epochs}",
+					dynamic_ncols=True,
+				)
+				for data in progress:
 					total_steps+=1
 
 					self.model.set_input(data)
 					batch_loss = self.model.optimize_parameters()
 					log_loss = log_loss + batch_loss
+					log_count += 1
+
+					avg_log_loss = log_loss / max(1, log_count)
+					progress.set_postfix(loss=f"{avg_log_loss:.4f}", step=total_steps)
 
 					if total_steps % self.opts.log_iter == 0:
-						avg_log_loss = log_loss/self.opts.log_iter
-						print('epoch', epoch, 'steps', total_steps, 'loss', avg_log_loss)
 						log_loss = 0
+						log_count = 0
+				progress.close()
 
 				if (epoch+1) % self.opts.val_freq == 0:
 					print("validation...")
@@ -69,6 +81,5 @@ class Generic_Train():
 				
 				if epoch % self.opts.save_freq == 0:
 					self.model.save_checkpoint(epoch)
-
 
 

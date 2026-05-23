@@ -1,11 +1,11 @@
 import argparse
+import importlib
 import os
 
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from dataloader import ValDataset, get_filelist
 from model_SS_net import ModelSSNet
 
 
@@ -154,7 +154,10 @@ class JointEvaluator:
         self.device = self.model.cloudy_data.device if hasattr(self.model, "cloudy_data") else "cuda"
 
         self.seg_metric = RunningSegMetricsGPU(self.model.num_classes, device="cuda")
-        self.cr_metric = RunningCloudRemovalMetrics(channels=4, device="cuda")
+        self.cr_metric = RunningCloudRemovalMetrics(
+            channels=int(getattr(self.opts, "optical_channels", 4)),
+            device="cuda",
+        )
 
         self.opts.output_patch_size = self.opts.model_train_size
         if not self.opts.is_upsample_landcover:
@@ -307,6 +310,7 @@ def build_parser():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--report_mode", choices=["joint", "seg", "cr"], default="joint")
+    parser.add_argument("--dataloader_module", type=str, default="dataloader")
     return parser
 
 
@@ -325,8 +329,9 @@ def main(opts=None):
     os.environ["CUDA_VISIBLE_DEVICES"] = opts.gpu_ids
     torch.cuda.set_device(int(str(opts.gpu_ids).split(",")[0]))
 
-    test_filelist = get_filelist(opts.test_list_filepath)
-    test_data = ValDataset(opts, test_filelist)
+    dataloader_module = importlib.import_module(opts.dataloader_module)
+    test_filelist = dataloader_module.get_filelist(opts.test_list_filepath)
+    test_data = dataloader_module.ValDataset(opts, test_filelist)
     test_dataloader = torch.utils.data.DataLoader(
         dataset=test_data,
         batch_size=opts.batch_size,

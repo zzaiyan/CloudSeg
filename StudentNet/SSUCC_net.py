@@ -140,15 +140,17 @@ class FuseBlock(nn.Module):
 '''
 '''
 class SSUCCNet(nn.Module):
-    def __init__(self, encoder_name, encoder_weights, classes):
+    def __init__(self, encoder_name, encoder_weights, classes, optical_channels=4):
         super(SSUCCNet, self).__init__()
+        self.optical_channels = optical_channels
         self.modality1_stream = smp.Unet(
             encoder_name=encoder_name,
             encoder_weights=encoder_weights,
-            in_channels=4,
+            in_channels=optical_channels,
             classes=classes,
         )
-        if encoder_name == 'mit_b4': update_module(self.modality1_stream.encoder.patch_embed1.proj, new_in_channels=4)
+        if encoder_name == 'mit_b4':
+            update_module(self.modality1_stream.encoder.patch_embed1.proj, new_in_channels=optical_channels)
 
         self.modality2_stream = smp.Unet(
             encoder_name=encoder_name,
@@ -172,7 +174,7 @@ class SSUCCNet(nn.Module):
 
         self.cr_head = nn.Sequential(*[
             nn.Conv2d(16, 64, 3, padding=1, stride=1),
-            nn.Conv2d(64, 4, 3, padding=1, stride=1)
+            nn.Conv2d(64, optical_channels, 3, padding=1, stride=1)
         ])
         
     def forward(self, modality1, modality2, output_shape=None):
@@ -307,10 +309,10 @@ class SSUCCNet(nn.Module):
 '''
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    modality1 = torch.randn(1, 4, 160, 160, device=device)
+    modality1 = torch.randn(1, 13, 160, 160, device=device)
     modality2 = torch.randn(1, 2, 160, 160, device=device)
 
-    net = SSUCCNet(encoder_name='mit_b4', encoder_weights='imagenet', classes=7)
+    net = SSUCCNet(encoder_name='mit_b4', encoder_weights='imagenet', classes=7, optical_channels=13)
     net.to(device)
     net.eval()
 

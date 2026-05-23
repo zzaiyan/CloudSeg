@@ -10,6 +10,16 @@ from torch.optim import lr_scheduler
 
 class ModelSSNet(ModelBase):
     @staticmethod
+    def _resolve_num_classes(opts):
+        if hasattr(opts, "num_classes") and opts.num_classes is not None:
+            return int(opts.num_classes)
+        if opts.lc_level == '1':
+            return 6
+        if opts.lc_level == '2':
+            return 11
+        raise ValueError(f"Unsupported lc_level: {opts.lc_level}")
+
+    @staticmethod
     def _maybe_wrap_data_parallel(network, gpu_ids):
         visible_gpu_ids = [gpu_id.strip() for gpu_id in str(gpu_ids).split(",") if gpu_id.strip()]
         if len(visible_gpu_ids) > 1:
@@ -38,18 +48,20 @@ class ModelSSNet(ModelBase):
         super(ModelSSNet, self).__init__()
         self.opts = opts
 
-        # assign value to self.num_classes
-        if self.opts.lc_level == '1':
-            self.num_classes = 6
-        elif self.opts.lc_level == '2':
-            self.num_classes = 11
+        self.num_classes = self._resolve_num_classes(self.opts)
+        self.optical_channels = int(getattr(self.opts, "optical_channels", 4))
         
-        encoder_weights = None if self.opts.pretrained_model is not None else 'imagenet'
+        encoder_weights = getattr(self.opts, "encoder_weights", None)
+        if encoder_weights is None:
+            encoder_weights = None if self.opts.pretrained_model is not None else 'imagenet'
+        if isinstance(encoder_weights, str) and encoder_weights.lower() == "none":
+            encoder_weights = None
 
         # create network
         self.net_G = SSUCCNet(encoder_name='mit_b4',
                               encoder_weights=encoder_weights,
-                              classes=self.num_classes).cuda()
+                              classes=self.num_classes,
+                              optical_channels=self.optical_channels).cuda()
         self.net_G = self._maybe_wrap_data_parallel(self.net_G, self.opts.gpu_ids)
 
         # load pre-trained model
@@ -67,9 +79,11 @@ class ModelSSNet(ModelBase):
             from SSUCC_net_CloudFree import SSUCC_net_CloudFree
             self.net_cloudfree_G = SSUCC_net_CloudFree(encoder_name='mit_b4',
                                                        encoder_weights=None,
-                                                       classes=self.num_classes).cuda()
+                                                       classes=self.num_classes,
+                                                       optical_channels=self.optical_channels).cuda()
             self.net_cloudfree_G = self._maybe_wrap_data_parallel(self.net_cloudfree_G, self.opts.gpu_ids)
-            checkpoint = torch.load('../checkpoints/TeacherNet.pth')
+            teacher_pretrained_model = getattr(self.opts, "teacher_pretrained_model", "../checkpoints/TeacherNet.pth")
+            checkpoint = torch.load(teacher_pretrained_model)
             self._load_network_state(self.net_cloudfree_G, checkpoint['network'])
             self.net_cloudfree_G.eval()
             for _,param in self.net_cloudfree_G.named_parameters():

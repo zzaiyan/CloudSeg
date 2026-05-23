@@ -1,0 +1,17 @@
+{
+  "cloud_coverage_ranges": [
+    "0-20%",
+    "20%-40%",
+    "40%-60%",
+    "60%-80%",
+    "80%-100%"
+  ],
+  "indexed_samples": 20000,
+  "sample_count": null,
+  "sample_ratio": null,
+  "sample_seed": 42,
+  "split_seed": 42,
+  "test_ratio": 0.1,
+  "train_ratio": 0.8,
+  "val_ratio": 0.1
+}
