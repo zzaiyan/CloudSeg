@@ -19,9 +19,11 @@ class ModelSSNet(ModelBase):
         elif self.opts.lc_level == '2':
             self.num_classes = 11
         
+        encoder_weights = None if self.opts.pretrained_model is not None else 'imagenet'
+
         # create network and load pre-trained model
         self.net_G = SSUCCNet(encoder_name='mit_b4',
-                              encoder_weights='imagenet',
+                              encoder_weights=encoder_weights,
                               classes=self.num_classes).cuda()
         self.net_G = nn.DataParallel(self.net_G)
         if self.opts.pretrained_model is not None:

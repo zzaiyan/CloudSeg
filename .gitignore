@@ -4,3 +4,4 @@
 __pycache__
 checkpoints/*
 M3R-CR/csv
+*.pth

@@ -10,6 +10,31 @@ from timm.layers.activations import Swish
 from ._base import EncoderMixin
 
 
+def _to_compat_default_cfgs(cfgs):
+    sample = next(iter(cfgs.values()))
+    if not isinstance(sample, dict):
+        return cfgs
+
+    class _CfgWrapper:
+        def __init__(self, cfg):
+            self.cfgs = {
+                "in1k": cfg,
+                "ap_in1k": cfg,
+                "ns_jft_in1k": cfg,
+                "aa_in1k": cfg,
+                "ra_in1k": cfg,
+                "ns_jft_in1k_475": cfg,
+            }
+
+    compat_cfgs = {name: _CfgWrapper(cfg) for name, cfg in cfgs.items()}
+    if "tf_efficientnet_l2" not in compat_cfgs and "tf_efficientnet_b8" in compat_cfgs:
+        compat_cfgs["tf_efficientnet_l2"] = compat_cfgs["tf_efficientnet_b8"]
+    return compat_cfgs
+
+
+default_cfgs = _to_compat_default_cfgs(default_cfgs)
+
+
 def get_efficientnet_kwargs(channel_multiplier=1.0, depth_multiplier=1.0, drop_rate=0.2):
     """Create EfficientNet model.
     Ref impl: https://github.com/tensorflow/tpu/blob/master/models/official/efficientnet/efficientnet_model.py
@@ -157,6 +182,14 @@ class EfficientNetLiteEncoder(EfficientNetBaseEncoder):
 
 
 def prepare_settings(settings):
+    if isinstance(settings, dict):
+        return {
+            "mean": settings["mean"],
+            "std": settings["std"],
+            "url": settings["url"],
+            "input_range": (0, 1),
+            "input_space": "RGB",
+        }
     return {
         "mean": settings.mean,
         "std": settings.std,
