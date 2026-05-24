@@ -6,6 +6,29 @@ from pathlib import Path
 from luojiaset_support import ensure_luojiaset_split_csvs, get_filelist
 
 
+def _set_cpu_thread_env(num_threads):
+    num_threads = str(max(1, int(num_threads)))
+    os.environ["OMP_NUM_THREADS"] = num_threads
+    os.environ["MKL_NUM_THREADS"] = num_threads
+    os.environ["OPENBLAS_NUM_THREADS"] = num_threads
+    os.environ["NUMEXPR_NUM_THREADS"] = num_threads
+    os.environ["GDAL_NUM_THREADS"] = num_threads
+    os.environ["OPJ_NUM_THREADS"] = num_threads
+
+
+def _seed_worker_factory(base_seed, worker_threads):
+    def _seed_worker(worker_id):
+        import random
+
+        import numpy as np
+
+        worker_seed = int(base_seed) + int(worker_id)
+        random.seed(worker_seed)
+        np.random.seed(worker_seed)
+
+    return _seed_worker
+
+
 class BaseLuojiaScript:
     dataset_root = "/mnt/ramdisk/LuojiaSET-OSFCR"
     split_dir = "artifacts/luojiaset_splits"
@@ -18,8 +41,14 @@ class BaseLuojiaScript:
     load_size = 256
     crop_size = 256
     model_train_size = 160
-    batch_size = 8
-    num_workers = 12
+    batch_size = 16
+    num_workers = 8
+    prefetch_factor = 2
+    pin_memory = True
+    persistent_workers = True
+    seed = 911
+    deterministic = False
+    worker_threads = 1
     is_load_cloudmask = True
 
     def _repo_root(self):
@@ -55,6 +84,12 @@ class BaseLuojiaScript:
         parser.add_argument("--num_classes", type=int, default=self.num_classes)
         parser.add_argument("--gpu_ids", type=str, default="0")
         parser.add_argument("--num_workers", type=int, default=self.num_workers)
+        parser.add_argument("--prefetch_factor", type=int, default=self.prefetch_factor)
+        parser.add_argument("--pin_memory", type=bool, default=self.pin_memory)
+        parser.add_argument("--persistent_workers", type=bool, default=self.persistent_workers)
+        parser.add_argument("--seed", type=int, default=self.seed)
+        parser.add_argument("--deterministic", type=bool, default=self.deterministic)
+        parser.add_argument("--worker_threads", type=int, default=self.worker_threads)
         return parser
 
 
@@ -89,6 +124,7 @@ class BaseLuojiaTrainScript(BaseLuojiaScript):
         if opts is None:
             opts = self.build_parser().parse_args()
         os.environ["CUDA_VISIBLE_DEVICES"] = opts.gpu_ids
+        _set_cpu_thread_env(opts.worker_threads)
 
         torch = importlib.import_module("torch")
         dataloader_module = importlib.import_module(self.dataloader_module_name)
@@ -97,7 +133,12 @@ class BaseLuojiaTrainScript(BaseLuojiaScript):
         model_base_module = importlib.import_module("model_base")
 
         model_base_module.print_options(opts)
-        model_base_module.seed_torch()
+        model_base_module.seed_torch(seed=opts.seed, deterministic=opts.deterministic)
+        torch.set_num_threads(max(1, int(opts.worker_threads)))
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
 
         train_filelist = get_filelist(opts.train_list_filepath)
         val_filelist = get_filelist(opts.val_list_filepath)
@@ -106,21 +147,33 @@ class BaseLuojiaTrainScript(BaseLuojiaScript):
         val_data = dataloader_module.ValDataset(opts, val_filelist)
         print("Train set: %d, Val set: %d" % (len(train_data), len(val_data)))
 
+        dataloader_kwargs = {
+            "num_workers": opts.num_workers,
+            "drop_last": True,
+            "pin_memory": opts.pin_memory,
+            "worker_init_fn": _seed_worker_factory(opts.seed, opts.worker_threads),
+        }
+        generator = torch.Generator()
+        generator.manual_seed(opts.seed)
+        dataloader_kwargs["generator"] = generator
+        if opts.num_workers > 0:
+            dataloader_kwargs["persistent_workers"] = opts.persistent_workers
+            dataloader_kwargs["prefetch_factor"] = opts.prefetch_factor
+
         train_dataloader = torch.utils.data.DataLoader(
             dataset=train_data,
             batch_size=opts.batch_sz,
             shuffle=True,
-            num_workers=opts.num_workers,
-            drop_last=True,
-            pin_memory=True,
+            **dataloader_kwargs,
         )
+        val_dataloader_kwargs = dict(dataloader_kwargs)
+        if opts.num_workers > 0:
+            val_dataloader_kwargs["num_workers"] = max(1, min(2, opts.num_workers // 2))
         val_dataloader = torch.utils.data.DataLoader(
             dataset=val_data,
             batch_size=opts.batch_sz,
             shuffle=False,
-            num_workers=opts.num_workers,
-            drop_last=True,
-            pin_memory=True,
+            **val_dataloader_kwargs,
         )
 
         model = model_module.ModelSSNet(opts)

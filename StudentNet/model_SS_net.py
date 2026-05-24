@@ -9,6 +9,18 @@ from SSUCC_net import SSUCCNet
 from torch.optim import lr_scheduler
 
 class ModelSSNet(ModelBase):
+    def _validate_landcover_targets(self):
+        if self.landcover_data is None:
+            return
+        invalid = (self.landcover_data != 255) & (
+            (self.landcover_data < 0) | (self.landcover_data >= self.num_classes)
+        )
+        if invalid.any():
+            invalid_values = torch.unique(self.landcover_data[invalid]).detach().cpu().tolist()
+            raise RuntimeError(
+                f"Found invalid landcover labels {invalid_values} for num_classes={self.num_classes}"
+            )
+
     @staticmethod
     def _resolve_num_classes(opts):
         if hasattr(opts, "num_classes") and opts.num_classes is not None:
@@ -82,7 +94,11 @@ class ModelSSNet(ModelBase):
                                                        classes=self.num_classes,
                                                        optical_channels=self.optical_channels).cuda()
             self.net_cloudfree_G = self._maybe_wrap_data_parallel(self.net_cloudfree_G, self.opts.gpu_ids)
-            teacher_pretrained_model = getattr(self.opts, "teacher_pretrained_model", "../checkpoints/TeacherNet.pth")
+            teacher_pretrained_model = getattr(
+                self.opts,
+                "teacher_pretrained_model",
+                "/home/zzy/zyzhang/CloudSeg/pretrained/TeacherNet.pth",
+            )
             checkpoint = torch.load(teacher_pretrained_model)
             self._load_network_state(self.net_cloudfree_G, checkpoint['network'])
             self.net_cloudfree_G.eval()
@@ -150,6 +166,7 @@ class ModelSSNet(ModelBase):
                      output_shape=[self.output_patch_size, self.output_patch_size],
                      is_train=True)
 
+        self._validate_landcover_targets()
         loss_SS = self.loss_SS_fn(self.pred_landcover_data, self.landcover_data)
         loss_CR = self.loss_CR_fn(self.pred_cloudfree_data, self.cloudfree_data, self.cloudmask_data)
         loss_KD = self.loss_KD_fn(self.pred_feats["cross_modal_decoder_out"], 

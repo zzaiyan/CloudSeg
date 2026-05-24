@@ -294,7 +294,7 @@ def print_seg_results(name, results):
 
 def build_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_data_folder", type=str, default="/remote-home/xufang/data/RS/M3M-CR/test")
+    parser.add_argument("--input_data_folder", type=str, default="/data/zzy/Datasets/M3R-CR/M3M-CR/test")
     parser.add_argument("--is_load_SAR", type=bool, default=True)
     parser.add_argument("--is_upsample_SAR", type=bool, default=True)
     parser.add_argument("--is_load_landcover", type=bool, default=True)
@@ -304,8 +304,8 @@ def build_parser():
     parser.add_argument("--load_size", type=int, default=300)
     parser.add_argument("--crop_size", type=int, default=300)
     parser.add_argument("--model_train_size", type=int, default=160)
-    parser.add_argument("--test_list_filepath", type=str, default="../M3R-CR/csv/test.csv")
-    parser.add_argument("--pretrained_model", type=str, default="../checkpoints/StudentNet.pth")
+    parser.add_argument("--test_list_filepath", type=str, default="/data/zzy/Datasets/M3R-CR/M3M-CR/test.csv")
+    parser.add_argument("--pretrained_model", type=str, default="/home/zzy/zyzhang/CloudSeg/pretrained/StudentNet.pth")
     parser.add_argument("--gpu_ids", type=str, default="0")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=4)

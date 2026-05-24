@@ -1,5 +1,6 @@
 import os
 import argparse
+from types import SimpleNamespace
 
 if __name__ == "__main__":
     ##===================================================##
@@ -8,9 +9,10 @@ if __name__ == "__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument('--batch_sz', type=int, default=32, help='batch size used for training')
 
-    parser.add_argument('--input_data_folder', type=str, default='/remote-home/xufang/data/RS/M3R-CR/train')
-    parser.add_argument('--train_list_filepath', type=str, default='../M3R-CR/csv/train.csv')
-    parser.add_argument('--val_list_filepath', type=str, default='../M3R-CR/csv/val.csv')
+    parser.add_argument('--input_data_folder', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train')
+    parser.add_argument('--val_input_data_folder', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/test')
+    parser.add_argument('--train_list_filepath', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train.csv')
+    parser.add_argument('--val_list_filepath', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/test.csv')
     parser.add_argument('--is_load_SAR', type=bool, default=True)
     parser.add_argument('--is_upsample_SAR', type=bool, default=True) # only useful when is_load_SAR = True
     parser.add_argument('--is_load_landcover', type=bool, default=True)
@@ -28,12 +30,12 @@ if __name__ == "__main__":
     parser.add_argument('--save_freq', type=int, default=1)
     parser.add_argument('--val_freq', type=int, default=2)
     parser.add_argument('--log_iter', type=int, default=10)
-    parser.add_argument('--save_model_dir', type=str, default='../checkpoints/TeacherNet')
+    parser.add_argument('--save_model_dir', type=str, default='/home/zzy/zyzhang/CloudSeg/checkpoints/TeacherNet')
 
     parser.add_argument('--continue_train_checkpoint', type=str, default=None)
     parser.add_argument('--pretrained_model', type=str, default=None)
 
-    parser.add_argument('--gpu_ids', type=str, default='1')
+    parser.add_argument('--gpu_ids', type=str, default='0')
 
     opts = parser.parse_args()
 
@@ -61,7 +63,9 @@ if __name__ == "__main__":
     val_filelist = get_filelist(opts.val_list_filepath)
 
     train_data = TrainDataset(opts, train_filelist)
-    val_data = ValDataset(opts, val_filelist)
+    val_opts = SimpleNamespace(**vars(opts))
+    val_opts.input_data_folder = opts.val_input_data_folder
+    val_data = ValDataset(val_opts, val_filelist)
     print("Train set: %d, Val set: %d" % (len(train_data), len(val_data)))
 
     train_dataloader = torch.utils.data.DataLoader(dataset=train_data, batch_size=opts.batch_sz,shuffle=True, num_workers=4, drop_last=True)

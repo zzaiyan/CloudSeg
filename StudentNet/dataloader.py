@@ -114,11 +114,11 @@ def lc_category_map(data_image, lc_level):
         data_image[data_image == 40] = 2 # Cropland --> Agriculture land
         data_image[data_image == 50] = 3 # Built-up --> Urban land
         data_image[data_image == 60] = 4 # Barren / sparse vegetation --> Barren land
-        data_image[data_image == 70] = 6 # Snow and ice --> Unknown
+        data_image[data_image == 70] = 255 # Snow and ice --> Ignore
         data_image[data_image == 80] = 5 # Open water --> Water
         data_image[data_image == 90] = 5 # Herbaceous wetland --> Water
-        data_image[data_image == 95] = 6 # Mangroves --> Unknown
-        data_image[data_image == 100] = 6 # Moss and lichen --> Unknown
+        data_image[data_image == 95] = 255 # Mangroves --> Ignore
+        data_image[data_image == 100] = 255 # Moss and lichen --> Ignore
     elif lc_level == '2':
         data_image[data_image == 10] = 0
         data_image[data_image == 20] = 1
@@ -352,7 +352,7 @@ if __name__ == "__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument('--load_size', type=int, default=300)
     parser.add_argument('--crop_size', type=int, default=160)
-    parser.add_argument('--input_data_folder', type=str, default='/data/xufang/RS/Planet-CR-2020/train')
+    parser.add_argument('--input_data_folder', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train')
 
     parser.add_argument('--is_load_SAR', type=bool, default=True)
     parser.add_argument('--is_upsample_SAR', type=bool, default=True) # only useful when is_load_SAR = True
@@ -363,7 +363,7 @@ if __name__ == "__main__":
 
     parser.add_argument('--is_load_cloudmask', type=bool, default=True)
 
-    parser.add_argument('--data_list_filepath', type=str, default='../../M3R-CR/one_train_sample.csv')
+    parser.add_argument('--data_list_filepath', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train.csv')
     
     opts = parser.parse_args() 
 

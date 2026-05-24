@@ -8,6 +8,7 @@ import numpy as np
 import rasterio
 import torch
 from torch.utils.data import Dataset
+from rasterio.windows import Window
 
 
 BUCKET_NAMES = ("0-20%", "20%-40%", "40%-60%", "60%-80%", "80%-100%")
@@ -367,32 +368,33 @@ def create_luojiaset_datasets(root_dir, **kwargs):
     }
 
 
-def get_opt_image(path):
+def _sanitize_array(image):
+    return np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0, copy=False).astype("float32", copy=False)
+
+
+def _read_raster(path, band=None, window=None):
     with rasterio.open(path, "r", driver="GTiff") as src:
-        image = src.read()
-    image[np.isnan(image)] = np.nanmean(image)
-    return image.astype("float32")
+        if band is None:
+            image = src.read(window=window)
+        else:
+            image = src.read(band, window=window)
+    return _sanitize_array(image)
 
 
-def get_sar_image(path):
-    with rasterio.open(path, "r", driver="GTiff") as src:
-        image = src.read()
-    image[np.isnan(image)] = np.nanmean(image)
-    return image.astype("float32")
+def get_opt_image(path, window=None):
+    return _read_raster(path, window=window)
 
 
-def get_landcover_image(path):
-    with rasterio.open(path, "r", driver="GTiff") as src:
-        image = src.read(1)
-    image[np.isnan(image)] = np.nanmean(image)
-    return image.astype("float32")
+def get_sar_image(path, window=None):
+    return _read_raster(path, window=window)
 
 
-def get_cloudmask_image(path):
-    with rasterio.open(path, "r", driver="GTiff") as src:
-        image = src.read(1)
-    image[np.isnan(image)] = np.nanmean(image)
-    return image.astype("float32")
+def get_landcover_image(path, window=None):
+    return _read_raster(path, band=1, window=window)
+
+
+def get_cloudmask_image(path, window=None):
+    return _read_raster(path, band=1, window=window)
 
 
 def normalize_optical(image):
@@ -413,52 +415,51 @@ def normalize_sar(image):
 
 class LuojiaBaseDataset(Dataset):
     def __init__(self, opts, filelist, is_train):
-        self.input_data_folder = opts.input_data_folder
+        self.input_data_folder = Path(opts.input_data_folder)
         self.is_load_SAR = opts.is_load_SAR
         self.is_load_landcover = opts.is_load_landcover
         self.is_load_cloudmask = opts.is_load_cloudmask
         self.load_size = opts.load_size
         self.crop_size = opts.crop_size
-        self.filelist = filelist
+        self.filelist = [
+            tuple(str(self.input_data_folder / relative_path) for relative_path in sample_paths)
+            for sample_paths in filelist
+        ]
         self.n_images = len(self.filelist)
         self.is_train = is_train
 
     def _get_crop_params(self):
         if self.load_size - self.crop_size <= 0:
-            return 0, 0
+            return 0, 0, self.crop_size, self.crop_size
         if self.is_train:
             y = random.randint(0, max(0, self.load_size - self.crop_size))
             x = random.randint(0, max(0, self.load_size - self.crop_size))
         else:
             y = max(0, self.load_size - self.crop_size) // 2
             x = max(0, self.load_size - self.crop_size) // 2
-        return y, x
+        return y, x, self.crop_size, self.crop_size
 
     def __getitem__(self, index):
         cloudfree_path, cloudy_path, sar_path, landcover_path, cloudmask_path = self.filelist[index]
-
-        cloudfree_path = str(Path(self.input_data_folder) / cloudfree_path)
-        cloudy_path = str(Path(self.input_data_folder) / cloudy_path)
-        sar_path = str(Path(self.input_data_folder) / sar_path)
-        landcover_path = str(Path(self.input_data_folder) / landcover_path)
-        cloudmask_path = str(Path(self.input_data_folder) / cloudmask_path)
-
-        cloudfree_data = normalize_optical(get_opt_image(cloudfree_path))
-        cloudy_data = normalize_optical(get_opt_image(cloudy_path))
-        sar_data = normalize_sar(get_sar_image(sar_path)) if self.is_load_SAR else None
-        landcover_data = get_landcover_image(landcover_path) if self.is_load_landcover else None
-        cloudmask_data = get_cloudmask_image(cloudmask_path) if self.is_load_cloudmask else None
-
-        y, x = self._get_crop_params()
+        y, x, crop_h, crop_w = self._get_crop_params()
+        window = None
         if self.load_size - self.crop_size > 0:
-            cloudfree_data = cloudfree_data[..., y : y + self.crop_size, x : x + self.crop_size]
-            cloudy_data = cloudy_data[..., y : y + self.crop_size, x : x + self.crop_size]
-            if sar_data is not None:
-                sar_data = sar_data[..., y : y + self.crop_size, x : x + self.crop_size]
-            if landcover_data is not None:
-                landcover_data = landcover_data[..., y : y + self.crop_size, x : x + self.crop_size]
-            if cloudmask_data is not None:
-                cloudmask_data = cloudmask_data[y : y + self.crop_size, x : x + self.crop_size]
+            window = Window(x, y, crop_w, crop_h)
+
+        cloudfree_data = normalize_optical(get_opt_image(cloudfree_path, window=window))
+        cloudy_data = normalize_optical(get_opt_image(cloudy_path, window=window))
+        sar_data = normalize_sar(get_sar_image(sar_path, window=window)) if self.is_load_SAR else None
+        landcover_data = get_landcover_image(landcover_path, window=window) if self.is_load_landcover else None
+        cloudmask_data = get_cloudmask_image(cloudmask_path, window=window) if self.is_load_cloudmask else None
+
+        cloudfree_data = np.ascontiguousarray(cloudfree_data)
+        cloudy_data = np.ascontiguousarray(cloudy_data)
+        if sar_data is not None:
+            sar_data = np.ascontiguousarray(sar_data)
+        if landcover_data is not None:
+            landcover_data = np.ascontiguousarray(landcover_data)
+        if cloudmask_data is not None:
+            cloudmask_data = np.ascontiguousarray(cloudmask_data)
 
         results = {
             "cloudy_data": torch.from_numpy(cloudy_data),

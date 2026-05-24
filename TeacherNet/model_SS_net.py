@@ -9,6 +9,18 @@ from SSUCC_net import SSUCCNet
 from torch.optim import lr_scheduler
 
 class ModelSSNet(ModelBase):
+    def _validate_landcover_targets(self):
+        if self.landcover_data is None:
+            return
+        invalid = (self.landcover_data != 255) & (
+            (self.landcover_data < 0) | (self.landcover_data >= self.num_classes)
+        )
+        if invalid.any():
+            invalid_values = torch.unique(self.landcover_data[invalid]).detach().cpu().tolist()
+            raise RuntimeError(
+                f"Found invalid landcover labels {invalid_values} for num_classes={self.num_classes}"
+            )
+
     @staticmethod
     def _resolve_num_classes(opts):
         if hasattr(opts, "num_classes") and opts.num_classes is not None:
@@ -112,6 +124,7 @@ class ModelSSNet(ModelBase):
                      SAR_data=self.SAR_data, 
                      output_shape=[self.output_patch_size, self.output_patch_size])
 
+        self._validate_landcover_targets()
         self.loss_total = self.loss_SS_fn(self.pred_landcover_data, self.landcover_data)
 
         self.optimizer_G.zero_grad()
