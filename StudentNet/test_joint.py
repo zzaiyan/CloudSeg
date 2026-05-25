@@ -1,9 +1,16 @@
 import argparse
+import csv
 import importlib
+import json
 import os
+from collections import defaultdict
+from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
+from PIL import ImageEnhance
 from tqdm import tqdm
 
 from model_SS_net import ModelSSNet
@@ -21,6 +28,284 @@ def rescale_start(value, input_patch_size, output_patch_size):
     scaled = value * output_patch_size / input_patch_size
     assert scaled.is_integer()
     return int(scaled)
+
+
+def infer_dataset_name(input_data_folder):
+    dataset_path = Path(input_data_folder).expanduser()
+    split_names = {"train", "val", "valid", "validation", "test"}
+    if dataset_path.name.lower() in split_names and dataset_path.parent.name:
+        return dataset_path.parent.name
+    return dataset_path.name or "dataset"
+
+
+def resolve_export_dir(opts):
+    export_dir = getattr(opts, "export_dir", None)
+    if export_dir:
+        return Path(export_dir).expanduser().resolve()
+
+    dataset_name = getattr(opts, "dataset_name", None) or infer_dataset_name(opts.input_data_folder)
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / "results" / dataset_name
+
+
+def get_segmentation_palette(opts, num_classes):
+    default_ignore = np.array([0, 0, 0], dtype=np.uint8)
+
+    if getattr(opts, "lc_level", "") == "2":
+        palette = np.array(
+            [
+                [0, 100, 0],
+                [255, 187, 34],
+                [255, 255, 76],
+                [240, 150, 255],
+                [250, 0, 0],
+                [180, 180, 180],
+                [240, 240, 240],
+                [0, 100, 200],
+                [0, 150, 160],
+                [0, 207, 117],
+                [250, 230, 160],
+            ],
+            dtype=np.uint8,
+        )
+    elif getattr(opts, "lc_level", "") == "1":
+        palette = np.array(
+            [
+                [0, 100, 0],
+                [255, 220, 80],
+                [240, 150, 255],
+                [250, 0, 0],
+                [180, 180, 180],
+                [0, 100, 200],
+            ],
+            dtype=np.uint8,
+        )
+    elif int(getattr(opts, "num_classes", num_classes)) == 7:
+        palette = np.array(
+            [
+                [34, 139, 34],
+                [255, 187, 34],
+                [255, 255, 76],
+                [240, 150, 255],
+                [250, 0, 0],
+                [0, 100, 200],
+                [180, 180, 180],
+            ],
+            dtype=np.uint8,
+        )
+    else:
+        palette = np.array(
+            [
+                [0, 100, 0],
+                [255, 187, 34],
+                [255, 255, 76],
+                [240, 150, 255],
+                [250, 0, 0],
+                [0, 100, 200],
+            ],
+            dtype=np.uint8,
+        )
+
+    if palette.shape[0] < num_classes:
+        extra = np.zeros((num_classes - palette.shape[0], 3), dtype=np.uint8)
+        palette = np.concatenate([palette, extra], axis=0)
+    return palette, default_ignore
+
+
+def optical_to_uint8_rgb(optical_data, brightness=3.0, rgb_bands=(2, 1, 0)):
+    if torch.is_tensor(optical_data):
+        optical_data = optical_data.detach().cpu().float().numpy()
+    rgb = np.asarray(optical_data, dtype=np.float32)[list(rgb_bands)]
+    rgb = np.clip(rgb * float(brightness), 0.0, 1.0)
+    rgb = np.moveaxis(rgb, 0, -1)
+    return np.ascontiguousarray((rgb * 255.0).round().astype(np.uint8))
+
+
+def single_channel_to_uint8_gray(single_channel_data):
+    if torch.is_tensor(single_channel_data):
+        single_channel_data = single_channel_data.detach().cpu().float().numpy()
+    gray = np.asarray(single_channel_data, dtype=np.float32)
+    gray = np.clip(gray, 0.0, 1.0)
+    return np.ascontiguousarray((gray * 255.0).round().astype(np.uint8))
+
+
+def labels_to_rgb_image(label_data, palette, ignore_color):
+    if torch.is_tensor(label_data):
+        label_data = label_data.detach().cpu().long().numpy()
+    labels = np.asarray(label_data, dtype=np.int64)
+    rgb = np.zeros(labels.shape + (3,), dtype=np.uint8)
+    ignore_mask = labels == 255
+    valid_mask = (~ignore_mask) & (labels >= 0) & (labels < palette.shape[0])
+    rgb[valid_mask] = palette[labels[valid_mask]]
+    rgb[ignore_mask] = ignore_color
+    return np.ascontiguousarray(rgb)
+
+
+def enhance_rgb_contrast(rgb_uint8, contrast=1.0):
+    image = Image.fromarray(rgb_uint8)
+    if contrast is not None and float(contrast) != 1.0:
+        image = ImageEnhance.Contrast(image).enhance(float(contrast))
+    return np.array(image)
+
+
+class ResultExporter:
+    def __init__(self, opts, num_classes):
+        self.opts = opts
+        self.num_classes = num_classes
+        self.export_payload = getattr(opts, "export_payload", "pred_only")
+        self.optical_brightness = float(getattr(opts, "optical_brightness", 3.0))
+        self.export_root = resolve_export_dir(opts)
+        self.palette, self.ignore_color = get_segmentation_palette(opts, num_classes)
+        self.name_counts = defaultdict(int)
+        self.subdirs = {
+            "cloudfree_pred_rgb": self.export_root / "cloudfree_pred_rgb",
+            "seg_pred_rgb": self.export_root / "seg_pred_rgb",
+        }
+        if self.export_payload == "all":
+            self.subdirs.update(
+                {
+                    "cloudy_rgb": self.export_root / "cloudy_rgb",
+                    "sar_mean": self.export_root / "sar_mean",
+                    "cloudfree_gt_rgb": self.export_root / "cloudfree_gt_rgb",
+                    "seg_gt_rgb": self.export_root / "seg_gt_rgb",
+                    "cloudmask": self.export_root / "cloudmask",
+                }
+            )
+        for path in self.subdirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+        self.manifest_path = self.export_root / "manifest.csv"
+        self.config_path = self.export_root / "export_config.json"
+        with self.manifest_path.open("w", newline="") as manifest_file:
+            writer = csv.DictWriter(
+                manifest_file,
+                fieldnames=[
+                    "sample_name",
+                    "file_name",
+                    "cloudfree_path",
+                    "cloudy_path",
+                    "sar_path",
+                    "landcover_path",
+                    "cloudmask_path",
+                ],
+            )
+            writer.writeheader()
+        self.config_path.write_text(
+            json.dumps(
+                {
+                    "dataset_name": getattr(self.opts, "dataset_name", None)
+                    or infer_dataset_name(self.opts.input_data_folder),
+                    "input_data_folder": str(Path(self.opts.input_data_folder).expanduser().resolve()),
+                    "dataloader_module": getattr(self.opts, "dataloader_module", "dataloader"),
+                    "export_payload": self.export_payload,
+                    "optical_brightness": self.optical_brightness,
+                    "is_load_SAR": bool(getattr(self.opts, "is_load_SAR", True)),
+                    "is_upsample_SAR": bool(getattr(self.opts, "is_upsample_SAR", True)),
+                    "is_load_landcover": bool(getattr(self.opts, "is_load_landcover", True)),
+                    "is_upsample_landcover": bool(getattr(self.opts, "is_upsample_landcover", False)),
+                    "is_load_cloudmask": bool(getattr(self.opts, "is_load_cloudmask", True)),
+                    "load_size": int(getattr(self.opts, "load_size", 300)),
+                    "crop_size": int(getattr(self.opts, "crop_size", 300)),
+                    "lc_level": getattr(self.opts, "lc_level", None),
+                    "num_classes": int(self.num_classes),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+    def _unique_stem(self, file_name):
+        stem = Path(file_name).stem
+        count = self.name_counts[stem]
+        self.name_counts[stem] += 1
+        if count == 0:
+            return stem
+        return f"{stem}__{count}"
+
+    def _to_uint8_rgb(self, optical_tensor):
+        return optical_to_uint8_rgb(optical_tensor, brightness=self.optical_brightness)
+
+    @staticmethod
+    def _to_uint8_gray(single_channel_tensor):
+        return single_channel_to_uint8_gray(single_channel_tensor)
+
+    def _labels_to_rgb(self, label_tensor):
+        return labels_to_rgb_image(label_tensor, self.palette, self.ignore_color)
+
+    @staticmethod
+    def _save_image(path, array):
+        Image.fromarray(array).save(path)
+
+    @staticmethod
+    def _get_source_value(source_paths, key, batch_idx):
+        if source_paths is None or key not in source_paths:
+            return ""
+        value = source_paths[key]
+        if isinstance(value, (list, tuple)):
+            return str(value[batch_idx])
+        return str(value)
+
+    def _append_manifest_row(self, sample_name, file_name, source_paths, batch_idx):
+        row = {
+            "sample_name": sample_name,
+            "file_name": file_name,
+            "cloudfree_path": self._get_source_value(source_paths, "cloudfree_path", batch_idx),
+            "cloudy_path": self._get_source_value(source_paths, "cloudy_path", batch_idx),
+            "sar_path": self._get_source_value(source_paths, "sar_path", batch_idx),
+            "landcover_path": self._get_source_value(source_paths, "landcover_path", batch_idx),
+            "cloudmask_path": self._get_source_value(source_paths, "cloudmask_path", batch_idx),
+        }
+        with self.manifest_path.open("a", newline="") as manifest_file:
+            writer = csv.DictWriter(manifest_file, fieldnames=list(row.keys()))
+            writer.writerow(row)
+
+    def export_batch(
+        self,
+        file_names,
+        cloudy_data,
+        sar_data,
+        cloudfree_gt,
+        cloudfree_pred,
+        seg_gt,
+        seg_pred,
+        cloudmask_data=None,
+        source_paths=None,
+    ):
+        for batch_idx, file_name in enumerate(file_names):
+            stem = self._unique_stem(file_name)
+            self._save_image(
+                self.subdirs["cloudfree_pred_rgb"] / f"{stem}.png",
+                self._to_uint8_rgb(cloudfree_pred[batch_idx]),
+            )
+            self._save_image(
+                self.subdirs["seg_pred_rgb"] / f"{stem}.png",
+                self._labels_to_rgb(seg_pred[batch_idx]),
+            )
+            self._append_manifest_row(stem, file_name, source_paths, batch_idx)
+
+            if self.export_payload == "all":
+                self._save_image(
+                    self.subdirs["cloudy_rgb"] / f"{stem}.png",
+                    self._to_uint8_rgb(cloudy_data[batch_idx]),
+                )
+                self._save_image(
+                    self.subdirs["cloudfree_gt_rgb"] / f"{stem}.png",
+                    self._to_uint8_rgb(cloudfree_gt[batch_idx]),
+                )
+                sar_mean = sar_data[batch_idx].mean(dim=0)
+                self._save_image(
+                    self.subdirs["sar_mean"] / f"{stem}.png",
+                    self._to_uint8_gray(sar_mean),
+                )
+                self._save_image(
+                    self.subdirs["seg_gt_rgb"] / f"{stem}.png",
+                    self._labels_to_rgb(seg_gt[batch_idx]),
+                )
+
+                if cloudmask_data is not None:
+                    self._save_image(
+                        self.subdirs["cloudmask"] / f"{stem}.png",
+                        self._to_uint8_gray(cloudmask_data[batch_idx]),
+                    )
 
 
 class RunningCloudRemovalMetrics:
@@ -175,6 +460,7 @@ class JointEvaluator:
         self.step_size = self.window_size // 2
         self.y_starts = compute_window_starts(self.opts.crop_size, self.window_size, self.step_size)
         self.x_starts = compute_window_starts(self.opts.crop_size, self.window_size, self.step_size)
+        self.result_exporter = ResultExporter(opts, self.model.num_classes) if opts.export_results else None
 
     @torch.no_grad()
     def predict_joint(self, optical_data, sar_data):
@@ -256,6 +542,41 @@ class JointEvaluator:
             self.seg_metric.update(self.model.landcover_data, pred_label, cloudmask)
             self.cr_metric.update(pred_cr, self.model.cloudfree_data)
 
+            if self.result_exporter is not None:
+                seg_gt_export = self.model.landcover_data
+                seg_pred_export = pred_label
+                cloudmask_export = cloudmask
+
+                if seg_gt_export.shape[-2:] != (self.opts.load_size, self.opts.load_size):
+                    seg_gt_export = F.interpolate(
+                        seg_gt_export.unsqueeze(1).float(),
+                        size=[self.opts.load_size, self.opts.load_size],
+                        mode="nearest",
+                    ).squeeze(1).long()
+                    seg_pred_export = F.interpolate(
+                        seg_pred_export.unsqueeze(1).float(),
+                        size=[self.opts.load_size, self.opts.load_size],
+                        mode="nearest",
+                    ).squeeze(1).long()
+                if cloudmask_export is not None and cloudmask_export.shape[-2:] != (self.opts.load_size, self.opts.load_size):
+                    cloudmask_export = F.interpolate(
+                        cloudmask_export.unsqueeze(1).float(),
+                        size=[self.opts.load_size, self.opts.load_size],
+                        mode="nearest",
+                    ).squeeze(1)
+
+                self.result_exporter.export_batch(
+                    file_names=self.model.file_name,
+                    cloudy_data=self.model.cloudy_data,
+                    sar_data=self.model.SAR_data,
+                    cloudfree_gt=self.model.cloudfree_data,
+                    cloudfree_pred=pred_cr,
+                    seg_gt=seg_gt_export,
+                    seg_pred=seg_pred_export,
+                    cloudmask_data=cloudmask_export,
+                    source_paths=getattr(self.model, "source_paths", None),
+                )
+
             seg_all = self.seg_metric.get_results(self.seg_metric.confusion_matrix)
             seg_cf = self.seg_metric.get_results(self.seg_metric.confusion_matrix_cloudfree)
             seg_cy = self.seg_metric.get_results(self.seg_metric.confusion_matrix_cloudy)
@@ -311,6 +632,11 @@ def build_parser():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--report_mode", choices=["joint", "seg", "cr"], default="joint")
     parser.add_argument("--dataloader_module", type=str, default="dataloader")
+    parser.add_argument("--export_results", action="store_true")
+    parser.add_argument("--export_dir", type=str, default=None)
+    parser.add_argument("--dataset_name", type=str, default=None)
+    parser.add_argument("--export_payload", choices=["pred_only", "all"], default="pred_only")
+    parser.add_argument("--optical_brightness", type=float, default=3.0)
     return parser
 
 
@@ -344,6 +670,8 @@ def main(opts=None):
 
     model = ModelSSNet(opts)
     evaluator = JointEvaluator(model, opts, test_dataloader)
+    if opts.export_results:
+        print(f"Export directory: {evaluator.result_exporter.export_root}")
     seg_all, seg_cf, seg_cy, cr = evaluator.evaluate()
 
     if opts.report_mode in {"joint", "seg"}:

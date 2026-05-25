@@ -2,6 +2,9 @@
 .git
 .DS_Store
 __pycache__
-checkpoints/*
+checkpoints/
+results/
+artifacts/
+pretrained/
 M3R-CR/csv
 *.pth

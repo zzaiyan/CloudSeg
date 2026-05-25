@@ -191,6 +191,9 @@ class BaseLuojiaTestScript(BaseLuojiaScript):
         parser.add_argument("--batch_size", type=int, default=self.batch_size)
         parser.add_argument("--report_mode", choices=["joint", "seg", "cr"], default=self.report_mode)
         parser.add_argument("--dataloader_module", type=str, default=self.dataloader_module_name)
+        parser.add_argument("--export_results", action="store_true")
+        parser.add_argument("--export_dir", type=str, default=None)
+        parser.add_argument("--dataset_name", type=str, default=None)
         return parser
 
     def run(self, opts=None):

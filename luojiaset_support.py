@@ -421,6 +421,7 @@ class LuojiaBaseDataset(Dataset):
         self.is_load_cloudmask = opts.is_load_cloudmask
         self.load_size = opts.load_size
         self.crop_size = opts.crop_size
+        self.relative_filelist = [tuple(sample_paths) for sample_paths in filelist]
         self.filelist = [
             tuple(str(self.input_data_folder / relative_path) for relative_path in sample_paths)
             for sample_paths in filelist
@@ -465,6 +466,13 @@ class LuojiaBaseDataset(Dataset):
             "cloudy_data": torch.from_numpy(cloudy_data),
             "cloudfree_data": torch.from_numpy(cloudfree_data),
             "file_name": Path(cloudfree_path).name,
+            "source_paths": {
+                "cloudfree_path": self.relative_filelist[index][0],
+                "cloudy_path": self.relative_filelist[index][1],
+                "sar_path": self.relative_filelist[index][2],
+                "landcover_path": self.relative_filelist[index][3],
+                "cloudmask_path": self.relative_filelist[index][4],
+            },
         }
         if sar_data is not None:
             results["SAR_data"] = torch.from_numpy(sar_data)

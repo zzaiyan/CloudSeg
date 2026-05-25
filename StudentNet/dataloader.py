@@ -227,7 +227,14 @@ class TrainDataset(Dataset):
 
         results = {'cloudy_data': planet_cloudy_data,
                    'cloudfree_data': planet_cloudfree_data,
-                   'file_name': os.path.basename(planet_cloudfree_path)}
+                   'file_name': os.path.basename(planet_cloudfree_path),
+                   'source_paths': {
+                       'cloudfree_path': self.filelist[index][0],
+                       'cloudy_path': self.filelist[index][1],
+                       'sar_path': self.filelist[index][2],
+                       'landcover_path': self.filelist[index][3],
+                       'cloudmask_path': self.filelist[index][4],
+                   }}
         if self.is_load_SAR:
             results['SAR_data'] = s1_data
         if self.is_load_landcover:
@@ -334,7 +341,14 @@ class ValDataset(Dataset):
 
         results = {'cloudy_data': planet_cloudy_data,
                    'cloudfree_data': planet_cloudfree_data,
-                   'file_name': os.path.basename(planet_cloudfree_path)}
+                   'file_name': os.path.basename(planet_cloudfree_path),
+                   'source_paths': {
+                       'cloudfree_path': self.filelist[index][0],
+                       'cloudy_path': self.filelist[index][1],
+                       'sar_path': self.filelist[index][2],
+                       'landcover_path': self.filelist[index][3],
+                       'cloudmask_path': self.filelist[index][4],
+                   }}
         if self.is_load_SAR:
             results['SAR_data'] = s1_data
         if self.is_load_landcover:

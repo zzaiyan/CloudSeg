@@ -137,12 +137,14 @@ class ModelSSNet(ModelBase):
         self.landcover_data = inputs['landcover_data'].long().cuda(non_blocking=True) if self.opts.is_load_landcover else None
         if not hasattr(self.opts, 'optimizer'):
           self.file_name = inputs['file_name']
+          self.source_paths = inputs.get('source_paths')
           if 'crop_params' in inputs:
               self.crop_params = inputs['crop_params']
           if 'SAR_path' in inputs:
               self.SAR_path = inputs['SAR_path']
         else:
           self.file_name = None
+          self.source_paths = None
         
     def forward(self, optical_data=None, SAR_data=None, output_shape=None, is_train=False, return_all=False):
         self.pred_landcover_data, self.pred_cloudfree_data, self.pred_feats = self.net_G(optical_data, 
