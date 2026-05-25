@@ -30,6 +30,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_freq', type=int, default=1)
     parser.add_argument('--val_freq', type=int, default=2)
     parser.add_argument('--log_iter', type=int, default=10)
+    parser.add_argument('--teacher_pretrained_model', type=str, 
+                        default='./checkpoints/TeacherNet/best_semantic_net.pth')
     parser.add_argument('--save_model_dir', type=str, default='/home/zzy/zyzhang/CloudSeg/checkpoints/StudentNet')
 
     parser.add_argument('--continue_train_checkpoint', type=str, default=None)

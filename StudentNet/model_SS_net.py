@@ -94,11 +94,7 @@ class ModelSSNet(ModelBase):
                                                        classes=self.num_classes,
                                                        optical_channels=self.optical_channels).cuda()
             self.net_cloudfree_G = self._maybe_wrap_data_parallel(self.net_cloudfree_G, self.opts.gpu_ids)
-            teacher_pretrained_model = getattr(
-                self.opts,
-                "teacher_pretrained_model",
-                "/home/zzy/zyzhang/CloudSeg/pretrained/TeacherNet.pth",
-            )
+            teacher_pretrained_model = self.opts.teacher_pretrained_model
             checkpoint = torch.load(teacher_pretrained_model)
             self._load_network_state(self.net_cloudfree_G, checkpoint['network'])
             self.net_cloudfree_G.eval()
