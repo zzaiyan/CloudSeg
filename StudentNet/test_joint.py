@@ -462,6 +462,40 @@ class JointEvaluator:
         self.x_starts = compute_window_starts(self.opts.crop_size, self.window_size, self.step_size)
         self.result_exporter = ResultExporter(opts, self.model.num_classes) if opts.export_results else None
 
+    def _prepare_segmentation_tensors(self, pred_seg):
+        seg_gt = self.model.landcover_data
+        cloudmask = self.model.cloudmask_data
+
+        if getattr(self.opts, "seg_eval_resolution", "label") == "3m":
+            target_h, target_w = self.model.cloudy_data.shape[-2:]
+            pred_seg = F.interpolate(
+                pred_seg,
+                size=[target_h, target_w],
+                mode="bilinear",
+                align_corners=False,
+            )
+            if seg_gt.shape[-2:] != (target_h, target_w):
+                seg_gt = F.interpolate(
+                    seg_gt.unsqueeze(1).float(),
+                    size=[target_h, target_w],
+                    mode="nearest",
+                ).squeeze(1).long()
+            if cloudmask is not None and cloudmask.shape[-2:] != (target_h, target_w):
+                cloudmask = F.interpolate(
+                    cloudmask.unsqueeze(1).float(),
+                    size=[target_h, target_w],
+                    mode="nearest",
+                ).squeeze(1)
+            return pred_seg, seg_gt, cloudmask
+
+        if not self.opts.is_upsample_landcover and cloudmask is not None:
+            cloudmask = F.interpolate(
+                cloudmask.unsqueeze(1),
+                size=[self.opts.output_size, self.opts.output_size],
+                mode="nearest",
+            ).squeeze(1)
+        return pred_seg, seg_gt, cloudmask
+
     @torch.no_grad()
     def predict_joint(self, optical_data, sar_data):
         if self.opts.crop_size == self.opts.model_train_size:
@@ -529,23 +563,15 @@ class JointEvaluator:
         for batch in progress:
             self.model.set_input(batch)
             pred_seg, pred_cr = self.predict_joint(self.model.cloudy_data, self.model.SAR_data)
-
-            cloudmask = self.model.cloudmask_data
-            if not self.opts.is_upsample_landcover:
-                cloudmask = F.interpolate(
-                    cloudmask.unsqueeze(1),
-                    size=[self.opts.output_size, self.opts.output_size],
-                    mode="nearest",
-                ).squeeze(1)
-
-            pred_label = pred_seg.argmax(dim=1)
-            self.seg_metric.update(self.model.landcover_data, pred_label, cloudmask)
+            pred_seg_metric, seg_gt_metric, cloudmask_metric = self._prepare_segmentation_tensors(pred_seg)
+            pred_label = pred_seg_metric.argmax(dim=1)
+            self.seg_metric.update(seg_gt_metric, pred_label, cloudmask_metric)
             self.cr_metric.update(pred_cr, self.model.cloudfree_data)
 
             if self.result_exporter is not None:
-                seg_gt_export = self.model.landcover_data
+                seg_gt_export = seg_gt_metric
                 seg_pred_export = pred_label
-                cloudmask_export = cloudmask
+                cloudmask_export = cloudmask_metric
 
                 if seg_gt_export.shape[-2:] != (self.opts.load_size, self.opts.load_size):
                     seg_gt_export = F.interpolate(
@@ -632,6 +658,7 @@ def build_parser():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--report_mode", choices=["joint", "seg", "cr"], default="joint")
     parser.add_argument("--dataloader_module", type=str, default="dataloader")
+    parser.add_argument("--seg_eval_resolution", choices=["label", "3m"], default="label")
     parser.add_argument("--export_results", action="store_true")
     parser.add_argument("--export_dir", type=str, default=None)
     parser.add_argument("--dataset_name", type=str, default=None)

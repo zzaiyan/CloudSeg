@@ -9,6 +9,21 @@ from SSUCC_net import SSUCCNet
 from torch.optim import lr_scheduler
 
 class ModelSSNet(ModelBase):
+    @staticmethod
+    def _as_bool_flag(value, default=True):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        value = str(value).strip().lower()
+        if value in {"1", "true", "yes", "y", "on"}:
+            return True
+        if value in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
+
     def _validate_landcover_targets(self):
         if self.landcover_data is None:
             return
@@ -62,6 +77,8 @@ class ModelSSNet(ModelBase):
 
         self.num_classes = self._resolve_num_classes(self.opts)
         self.optical_channels = int(getattr(self.opts, "optical_channels", 4))
+        self.use_cloud_removal = self._as_bool_flag(getattr(self.opts, "use_cloud_removal", 1), default=True)
+        self.use_kd = self._as_bool_flag(getattr(self.opts, "use_kd", 1), default=True)
         
         encoder_weights = getattr(self.opts, "encoder_weights", None)
         if encoder_weights is None:
@@ -87,19 +104,24 @@ class ModelSSNet(ModelBase):
 
             # self.print_networks(self.net_G)
 
-            # load model trained on cloud-free images
-            from SSUCC_net_CloudFree import SSUCC_net_CloudFree
-            self.net_cloudfree_G = SSUCC_net_CloudFree(encoder_name='mit_b4',
-                                                       encoder_weights=None,
-                                                       classes=self.num_classes,
-                                                       optical_channels=self.optical_channels).cuda()
-            self.net_cloudfree_G = self._maybe_wrap_data_parallel(self.net_cloudfree_G, self.opts.gpu_ids)
-            teacher_pretrained_model = self.opts.teacher_pretrained_model
-            checkpoint = torch.load(teacher_pretrained_model)
-            self._load_network_state(self.net_cloudfree_G, checkpoint['network'])
-            self.net_cloudfree_G.eval()
-            for _,param in self.net_cloudfree_G.named_parameters():
-                param.requires_grad = False
+            self.net_cloudfree_G = None
+            if self.use_kd:
+                # load model trained on cloud-free images
+                from SSUCC_net_CloudFree import SSUCC_net_CloudFree
+
+                self.net_cloudfree_G = SSUCC_net_CloudFree(
+                    encoder_name='mit_b4',
+                    encoder_weights=None,
+                    classes=self.num_classes,
+                    optical_channels=self.optical_channels,
+                ).cuda()
+                self.net_cloudfree_G = self._maybe_wrap_data_parallel(self.net_cloudfree_G, self.opts.gpu_ids)
+                teacher_pretrained_model = self.opts.teacher_pretrained_model
+                checkpoint = torch.load(teacher_pretrained_model)
+                self._load_network_state(self.net_cloudfree_G, checkpoint['network'])
+                self.net_cloudfree_G.eval()
+                for _, param in self.net_cloudfree_G.named_parameters():
+                    param.requires_grad = False
 
             self.output_patch_size = self.opts.crop_size 
             if not self.opts.is_upsample_landcover:
@@ -113,11 +135,17 @@ class ModelSSNet(ModelBase):
             self.lr_scheduler = lr_scheduler.StepLR(self.optimizer_G, step_size=self.opts.lr_step, gamma=0.5)
             
             self.loss_SS_fn = nn.CrossEntropyLoss(ignore_index=255, reduction='mean')
-            from losses import ECCharbonnierLoss
-            self.loss_CR_fn = ECCharbonnierLoss()
+            self.loss_CR_fn = None
+            if self.use_cloud_removal:
+                from losses import ECCharbonnierLoss
+
+                self.loss_CR_fn = ECCharbonnierLoss()
             self.CR_weight = 1. 
-            from losses import MaskHint
-            self.loss_KD_fn = MaskHint()
+            self.loss_KD_fn = None
+            if self.use_kd:
+                from losses import MaskHint
+
+                self.loss_KD_fn = MaskHint()
             self.KD_weight = 1.
 
             if self.opts.continue_train_checkpoint is not None:
@@ -150,7 +178,7 @@ class ModelSSNet(ModelBase):
         self.pred_landcover_data, self.pred_cloudfree_data, self.pred_feats = self.net_G(optical_data, 
                                                                                          SAR_data, 
                                                                                          output_shape)
-        if is_train:
+        if is_train and self.use_kd and self.net_cloudfree_G is not None:
             self.lc_from_cloudfree, self.feats_from_cloudfree = self.net_cloudfree_G(self.cloudfree_data,
                                                                                      SAR_data,
                                                                                      output_shape)
@@ -166,10 +194,17 @@ class ModelSSNet(ModelBase):
 
         self._validate_landcover_targets()
         loss_SS = self.loss_SS_fn(self.pred_landcover_data, self.landcover_data)
-        loss_CR = self.loss_CR_fn(self.pred_cloudfree_data, self.cloudfree_data, self.cloudmask_data)
-        loss_KD = self.loss_KD_fn(self.pred_feats["cross_modal_decoder_out"], 
-                                  self.feats_from_cloudfree["cross_modal_decoder_out"].detach(), 
-                                  self.cloudmask_data) 
+        loss_CR = torch.zeros((), device=self.pred_landcover_data.device)
+        if self.use_cloud_removal and self.loss_CR_fn is not None:
+            loss_CR = self.loss_CR_fn(self.pred_cloudfree_data, self.cloudfree_data, self.cloudmask_data)
+
+        loss_KD = torch.zeros((), device=self.pred_landcover_data.device)
+        if self.use_kd and self.loss_KD_fn is not None:
+            loss_KD = self.loss_KD_fn(
+                self.pred_feats["cross_modal_decoder_out"],
+                self.feats_from_cloudfree["cross_modal_decoder_out"].detach(),
+                self.cloudmask_data,
+            )
 
         self.loss_total = loss_SS + self.CR_weight*loss_CR + self.KD_weight*loss_KD
 
