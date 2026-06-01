@@ -9,10 +9,10 @@ if __name__ == "__main__":
     parser=argparse.ArgumentParser()
     parser.add_argument('--batch_sz', type=int, default=32, help='batch size used for training')
 
-    parser.add_argument('--input_data_folder', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train')
-    parser.add_argument('--val_input_data_folder', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/test')
-    parser.add_argument('--train_list_filepath', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/train.csv')
-    parser.add_argument('--val_list_filepath', type=str, default='/data/zzy/Datasets/M3R-CR/M3M-CR/test.csv')
+    parser.add_argument('--input_data_folder', type=str, default='/mnt/ramdisk/M3M-CR/train')
+    parser.add_argument('--val_input_data_folder', type=str, default='/mnt/ramdisk/M3M-CR/test')
+    parser.add_argument('--train_list_filepath', type=str, default='/mnt/ramdisk/M3M-CR/train.csv')
+    parser.add_argument('--val_list_filepath', type=str, default='/mnt/ramdisk/M3M-CR/test.csv')
     parser.add_argument('--is_load_SAR', type=bool, default=True)
     parser.add_argument('--is_upsample_SAR', type=bool, default=True) # only useful when is_load_SAR = True
     parser.add_argument('--is_load_landcover', type=bool, default=True)
